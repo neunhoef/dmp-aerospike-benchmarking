@@ -1,121 +1,172 @@
 package main
 
 import (
+	// "bytes"
+	// "encoding/binary"
+	"flag"
 	"fmt"
-	. "github.com/aerospike/aerospike-client-go"
-	// "github.com/davecgh/go-spew/spew"
-	// "github.com/satori/go.uuid"
 	"log"
-	"math"
-	// "reflect"
+	// "net/http"
+	// _ "net/http/pprof"
+	"os"
+	// "regexp"
+	"runtime"
+	"strconv"
+	// "strings"
+	// "sync"
+	// "sync/atomic"
+	"crypto/md5"
+	as "github.com/aerospike/aerospike-client-go"
+	"github.com/davecgh/go-spew/spew"
 	"time"
+	// asl "github.com/aerospike/aerospike-client-go/logger"
+	// ast "github.com/aerospike/aerospike-client-go/types"
 )
+
+// type TStats struct {
+// 	Exit       bool
+// 	W, R       int // write and read counts
+// 	WE, RE     int // write and read errors
+// 	WTO, RTO   int // write and read timeouts
+// 	WMin, WMax int64
+// 	RMin, RMax int64
+// 	WLat, RLat int64
+// 	Wn, Rn     []int64
+// }
+
+// var countReportChan chan *TStats
+
+var host = flag.String("h", "127.0.0.1", "Aerospike server seed hostnames or IP addresses")
+var port = flag.Int("p", 3000, "Aerospike server seed hostname or IP address port number.")
+var namespace = flag.String("n", "test", "Aerospike namespace.")
+var set = flag.String("s", "testset", "Aerospike set name.")
+
+// var keyCount = flag.Int("k", 1000000, "Key/record count or key/record range.")
+
+// var user = flag.String("U", "", "User name.")
+// var password = flag.String("P", "", "User password.")
+
+// var binDef = flag.String("o", "I", "Bin object specification.\n\tI\t: Read/write integer bin.\n\tB:200\t: Read/write byte array bin of length 200.\n\tS:50\t: Read/write string bin of length 50.")
+// var concurrency = flag.Int("c", 32, "Number of goroutines to generate load.")
+// var workloadDef = flag.String("w", "I:100", "Desired workload.\n\tI:60\t: Linear 'insert' workload initializing 60% of the keys.\n\tRU:80\t: Random read/update workload with 80% reads and 20% writes.")
+// var latency = flag.String("L", "", "Latency <columns>,<shift>.\n\tShow transaction latency percentages using elapsed time ranges.\n\t<columns> Number of elapsed time ranges.\n\t<shift>   Power of 2 multiple between each range starting at column 3.")
+// var throughput = flag.Int64("g", 0, "Throttle transactions per second to a maximum value.\n\tIf tps is zero, do not throttle throughput.")
+// var timeout = flag.Int("T", 0, "Read/Write timeout in milliseconds.")
+// var maxRetries = flag.Int("maxRetries", 2, "Maximum number of retries before aborting the current transaction.")
+// var connQueueSize = flag.Int("queueSize", 4096, "Maximum number of connections to pool.")
+
+// var randBinData = flag.Bool("R", false, "Use dynamically generated random bin values instead of default static fixed bin values.")
+// var useMarshalling = flag.Bool("M", false, "Use marshaling a struct instead of simple key/value operations")
+// var debugMode = flag.Bool("d", false, "Run benchmarks in debug mode.")
+// var profileMode = flag.Bool("profile", false, "Run benchmarks with profiler active on port 6060.")
+var showUsage = flag.Bool("u", false, "Show usage information.")
+
+// parsed data
+// var binDataType string
+// var binDataSize int
+// var workloadType string
+// var workloadPercent int
+// var latBase, latCols int
+
+// group mutex to wait for all load generating go routines to finish
+// var wg sync.WaitGroup
+
+// // throughput counter
+// var currThroughput int64
+// var lastReport int64
+
+func main() {
+	// use all cpus in the system for concurrency
+	spew.Dump("here we go...")
+	log.Printf("Setting number of CPUs to use: %d", runtime.NumCPU())
+	runtime.GOMAXPROCS(runtime.NumCPU())
+	readFlags()
+
+	seedDB(1000, 3)
+}
+
+func seedDB(cidCount int, didsPerCid int) {
+	client, err := as.NewClient("10.150.73.10", 3000)
+	panicOnError(err)
+
+	var WritePolicy = as.NewWritePolicy(0, 0)
+	WritePolicy.Timeout = 10000 * time.Millisecond
+	WritePolicy.SocketTimeout = 10000 * time.Millisecond
+
+	log.Printf("Seeding the database with %v CIDs, using %v Devices per CID", cidCount, didsPerCid)
+	begin := time.Now()
+	for c := 0; c < cidCount; c++ {
+		cid := makeUuidFromString("cid" + strconv.Itoa(c))
+
+		var dids []string
+		for d := 0; d < didsPerCid; d++ {
+			did := makeUuidFromString(strconv.Itoa(c) + "+" + strconv.Itoa(d))
+			dids = append(dids, did)
+			key, err := as.NewKey("cid", "devices", "DID:"+did)
+			panicOnError(err)
+
+			bins := as.BinMap{"CID": cid}
+
+			err = client.Put(WritePolicy, key, bins)
+			panicOnError(err)
+		}
+
+		// Write CID
+		key, err := as.NewKey("cid", "devices", "CID:"+cid)
+		panicOnError(err)
+		bins := as.BinMap{"Devices": dids}
+		err = client.Put(WritePolicy, key, bins)
+		panicOnError(err)
+	}
+	end := time.Now()
+
+	log.Println("Seeded " + fmt.Sprintf("%v", cidCount) + " CIDs in: " + fmt.Sprintf("%v", end.Sub(begin)))
+}
+
+func readFlags() {
+	flag.Parse()
+
+	if *showUsage {
+		flag.Usage()
+		os.Exit(0)
+	}
+}
+
+func makeUuidFromString(str string) string {
+	data := []byte(str)
+	md5 := fmt.Sprintf("%x", md5.Sum(data))
+	return md5[:8] + "-" + md5[8:12] + "-" + md5[12:16] + "-" + md5[16:20] + "-" + md5[20:32]
+}
+
+func max(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func min(a, b int64) int64 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func incrAvg(avg float64, inc float64) float64 {
+	avg = avg + inc
+	return avg / 2
+}
+
+func average(xs []float64) float64 {
+	total := 0.0
+	for _, v := range xs {
+		total += v
+	}
+	return total / float64(len(xs))
+}
 
 func panicOnError(err error) {
 	if err != nil {
 		panic(err)
 	}
-}
-
-func Round(val float64, roundOn float64, places int) (newVal float64) {
-	var round float64
-	pow := math.Pow(10, float64(places))
-	digit := pow * val
-	_, div := math.Modf(digit)
-	_div := math.Copysign(div, val)
-	_roundOn := math.Copysign(roundOn, val)
-	if _div >= _roundOn {
-		round = math.Ceil(digit)
-	} else {
-		round = math.Floor(digit)
-	}
-	newVal = round / pow
-	return
-}
-
-func main() {
-	// define a client to connect to
-	client, err := NewClient("10.150.73.10", 3000)
-	panicOnError(err)
-
-	var WritePolicy = NewWritePolicy(0, 0)
-	WritePolicy.Timeout = 10000 * time.Millisecond
-	WritePolicy.SocketTimeout = 10000 * time.Millisecond
-	// return
-	// Policy{
-	//     Priority:            Priority.DEFAULT,
-	//     Timeout:             10000 * time.Millisecond, // no timeout
-	//     MaxRetries:          2,
-	//     SleepBetweenRetries: 500 * time.Millisecond,
-	//     SleepMultiplier:     1.5
-	//  	}
-
-	dids := []string{"11111111-1111-1111-1111-111111111111",
-		"22222222-2222-2222-2222-222222222222",
-		"33333333-3333-3333-3333-333333333333",
-		"44444444-4444-4444-4444-444444444444",
-		"55555555-5555-5555-5555-555555555555"}
-
-	cid := "88888888-8888-8888-8888-888888888888"
-	for _, did := range dids {
-		key, err := NewKey("cid", "devices", "DID:"+did)
-		panicOnError(err)
-
-		bins := BinMap{
-			"CID":     cid,
-			"Sources": []interface{}{"Liveramp", "An Other Source"},
-		}
-
-		err = client.Put(WritePolicy, key, bins)
-		panicOnError(err)
-	}
-
-	total_begin := time.Now()
-	key, err := NewKey("cid", "devices", "CID:"+cid)
-	panicOnError(err)
-
-	bins := BinMap{"Devices": dids}
-
-	err = client.Put(WritePolicy, key, bins)
-	panicOnError(err)
-
-	begin := time.Now()
-	policy := NewPolicy()
-
-	key, err = NewKey("cid", "devices", "DID:"+dids[0])
-	record, err := client.Get(policy, key)
-	panicOnError(err)
-	end := time.Now()
-	log.Println("Query CID from DID in: " + fmt.Sprintf("%v", end.Sub(begin)))
-
-	read_cid := record.Bins["CID"].(string)
-
-	type Data struct {
-		Devices []string `json:"devices" as:"Devices"`
-	}
-	rec := &Data{}
-
-	begin = time.Now()
-	key, err = NewKey("cid", "devices", "CID:"+read_cid)
-	err = client.GetObject(nil, key, rec)
-	panicOnError(err)
-	end = time.Now()
-
-	log.Println("Query Device list from CID in: " + fmt.Sprintf("%v", end.Sub(begin)))
-
-	begin = time.Now()
-	var batch_keys []*Key
-	for _, device_item := range rec.Devices {
-		item_key, _ := NewKey("cid", "devices", "DID:"+device_item)
-		batch_keys = append(batch_keys, item_key)
-	}
-
-	_, err = client.BatchGet(nil, batch_keys, "Sources")
-	panicOnError(err)
-	end = time.Now()
-	log.Println("Batch Query DIDs in Device list: " + fmt.Sprintf("%v", end.Sub(begin)))
-
-	total_end := time.Now()
-	log.Println("Total time for read requests: " + fmt.Sprintf("%v", total_end.Sub(total_begin)))
-
 }
