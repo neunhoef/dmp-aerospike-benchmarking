@@ -1,93 +1,187 @@
 package main
 
 import (
-	// "bytes"
-	// "encoding/binary"
+	"crypto/md5"
 	"flag"
 	"fmt"
-	"log"
-	// "net/http"
-	// _ "net/http/pprof"
-	"os"
-	// "regexp"
-	"runtime"
-	"strconv"
-	// "strings"
-	// "sync"
-	// "sync/atomic"
-	"crypto/md5"
 	as "github.com/aerospike/aerospike-client-go"
-	"github.com/davecgh/go-spew/spew"
+	ast "github.com/aerospike/aerospike-client-go/types"
+	// "github.com/davecgh/go-spew/spew"
+	"log"
+	"math"
+	"math/rand"
+	"os"
+	"strconv"
 	"time"
-	// asl "github.com/aerospike/aerospike-client-go/logger"
-	// ast "github.com/aerospike/aerospike-client-go/types"
 )
 
-// type TStats struct {
-// 	Exit       bool
-// 	W, R       int // write and read counts
-// 	WE, RE     int // write and read errors
-// 	WTO, RTO   int // write and read timeouts
-// 	WMin, WMax int64
-// 	RMin, RMax int64
-// 	WLat, RLat int64
-// 	Wn, Rn     []int64
-// }
-
-// var countReportChan chan *TStats
-
-var host = flag.String("h", "127.0.0.1", "Aerospike server seed hostnames or IP addresses")
-var port = flag.Int("p", 3000, "Aerospike server seed hostname or IP address port number.")
-var namespace = flag.String("n", "test", "Aerospike namespace.")
-var set = flag.String("s", "testset", "Aerospike set name.")
-
-// var keyCount = flag.Int("k", 1000000, "Key/record count or key/record range.")
-
-// var user = flag.String("U", "", "User name.")
-// var password = flag.String("P", "", "User password.")
-
-// var binDef = flag.String("o", "I", "Bin object specification.\n\tI\t: Read/write integer bin.\n\tB:200\t: Read/write byte array bin of length 200.\n\tS:50\t: Read/write string bin of length 50.")
-// var concurrency = flag.Int("c", 32, "Number of goroutines to generate load.")
-// var workloadDef = flag.String("w", "I:100", "Desired workload.\n\tI:60\t: Linear 'insert' workload initializing 60% of the keys.\n\tRU:80\t: Random read/update workload with 80% reads and 20% writes.")
-// var latency = flag.String("L", "", "Latency <columns>,<shift>.\n\tShow transaction latency percentages using elapsed time ranges.\n\t<columns> Number of elapsed time ranges.\n\t<shift>   Power of 2 multiple between each range starting at column 3.")
-// var throughput = flag.Int64("g", 0, "Throttle transactions per second to a maximum value.\n\tIf tps is zero, do not throttle throughput.")
-// var timeout = flag.Int("T", 0, "Read/Write timeout in milliseconds.")
-// var maxRetries = flag.Int("maxRetries", 2, "Maximum number of retries before aborting the current transaction.")
-// var connQueueSize = flag.Int("queueSize", 4096, "Maximum number of connections to pool.")
-
-// var randBinData = flag.Bool("R", false, "Use dynamically generated random bin values instead of default static fixed bin values.")
-// var useMarshalling = flag.Bool("M", false, "Use marshaling a struct instead of simple key/value operations")
-// var debugMode = flag.Bool("d", false, "Run benchmarks in debug mode.")
-// var profileMode = flag.Bool("profile", false, "Run benchmarks with profiler active on port 6060.")
-var showUsage = flag.Bool("u", false, "Show usage information.")
-
-// parsed data
-// var binDataType string
-// var binDataSize int
-// var workloadType string
-// var workloadPercent int
-// var latBase, latCols int
-
-// group mutex to wait for all load generating go routines to finish
-// var wg sync.WaitGroup
-
-// // throughput counter
-// var currThroughput int64
-// var lastReport int64
-
-func main() {
-	// use all cpus in the system for concurrency
-	spew.Dump("here we go...")
-	log.Printf("Setting number of CPUs to use: %d", runtime.NumCPU())
-	runtime.GOMAXPROCS(runtime.NumCPU())
-	readFlags()
-
-	seedDB(1000, 3)
+type TStats struct {
+	exit         bool
+	readCount    int // write and read counts
+	readError    int // write and read errors
+	readTimeout  int // write and read timeouts
+	readLat      int64
+	greaterThan1 int
+	greaterThan2 int
+	greaterThan4 int
 }
 
-func seedDB(cidCount int, didsPerCid int) {
-	client, err := as.NewClient("10.150.73.10", 3000)
+var reportChan chan *TStats
+
+var host = flag.String("h", "10.150.73.10", "Aerospike server hostnames or IP addresses")
+var port = flag.Int("p", 3000, "Aerospike server port number.")
+var namespace = flag.String("n", "cid", "Aerospike namespace.")
+var set = flag.String("s", "devices", "Aerospike set name.")
+var benchMode = flag.String("m", "query", "query/seed. Seed to insert records, query to benchmark")
+var keyCount = flag.Int("k", 100000, "How many CID users to insert in Seed mode, or the range UUIDs to query that have already been seeded.")
+var didsPerCid = flag.Int("d", 3, "How many devices per CID to insert in Seed mode.")
+var concurrency = flag.Int("c", 32, "Number of goroutines for querying.")
+var timeLimit = flag.Int("t", 60, "Number of seconds to run benchmark.")
+var reportInterval = flag.Int("i", 10, "Print a status report every x seconds. Should be < Time Limit")
+var showUsage = flag.Bool("u", false, "Show usage information.")
+
+var startExecutionTime time.Time
+
+func main() {
+	log.Println("[ Aerospike Benchmark ]")
+	client, err := as.NewClient(*host, *port)
 	panicOnError(err)
+	log.Println("Nodes Found:", client.GetNodeNames())
+	log.Println("-------------------------------------------------------------------------------------")
+
+	readFlags()
+
+	if *benchMode == "seed" {
+		seedDB(client, *keyCount, *didsPerCid)
+		os.Exit(0)
+	}
+
+	readPolicy := as.NewPolicy()
+
+	reportChan = make(chan *TStats, 4*(*concurrency))
+
+	startExecutionTime = time.Now()
+
+	for i := 0; i < *concurrency; i++ {
+		go runQueryBenchmark(client, readPolicy)
+	}
+
+	var intervalReqCount, intervalErrCount, intervalTOCount, intervalOneMs, intervalTwoMs, intervalFourMs int
+	var totalReqCount, totalErrCount, totalTOCount, totalOneMs, totalTwoMs, totalFourMs int
+	var intervalMinLat, intervalMaxLat int64
+	var totalMinLat, totalMaxLat int64
+	lastReportTime := time.Now()
+
+	for {
+		select {
+		case stats := <-reportChan:
+			intervalReqCount += stats.readCount
+			intervalErrCount += stats.readError
+			intervalTOCount += stats.readTimeout
+			intervalMinLat = min(intervalMinLat, stats.readLat)
+			intervalMaxLat = max(intervalMaxLat, stats.readLat)
+			intervalOneMs += stats.greaterThan1
+			intervalTwoMs += stats.greaterThan2
+			intervalFourMs += stats.greaterThan4
+
+			if time.Now().Sub(lastReportTime) >= (time.Duration(*reportInterval) * time.Second) {
+
+				log.Println("QPS: " + fmt.Sprintf("%v", (math.Round(float64(intervalReqCount)/float64(*reportInterval)))) +
+					" | " + "Min: " + fmt.Sprintf("%v", intervalMinLat) +
+					"\xC2\xB5s | Max: " + fmt.Sprintf("%v", intervalMaxLat) +
+					"\xC2\xB5s | >1ms: " + fmt.Sprintf("%v", (math.Round(float64(intervalOneMs)/float64(intervalReqCount)/0.0001)/100)) +
+					"% | >2ms: " + fmt.Sprintf("%v", (math.Round(float64(intervalTwoMs)/float64(intervalReqCount)/0.0001)/100)) +
+					"% | >4ms: " + fmt.Sprintf("%v", (math.Round(float64(intervalFourMs)/float64(intervalReqCount)/0.0001)/100)) +
+					"% | Timeouts: " + fmt.Sprintf("%v", intervalTOCount) + " (" + fmt.Sprintf("%v", (math.Round(float64(intervalTOCount)/float64(intervalReqCount)/0.0001)/100)) + "%)" +
+					"| Errors: " + fmt.Sprintf("%v", intervalErrCount) + " (" + fmt.Sprintf("%v", (math.Round(float64(intervalErrCount)/float64(intervalReqCount)/0.0001)/100)) + "%)")
+				lastReportTime = time.Now()
+
+				// reset interval counters, add to total.
+				totalReqCount += intervalReqCount
+				totalErrCount += intervalErrCount
+				totalTOCount += intervalTOCount
+				totalMinLat = min(totalMinLat, intervalMinLat)
+				totalMaxLat = max(totalMaxLat, intervalMaxLat)
+				totalOneMs += intervalOneMs
+				totalTwoMs += intervalTwoMs
+				totalFourMs += intervalFourMs
+
+				intervalReqCount = 0
+				intervalErrCount = 0
+				intervalTOCount = 0
+				intervalMinLat = 0
+				intervalMaxLat = 0
+				intervalOneMs = 0
+				intervalTwoMs = 0
+				intervalFourMs = 0
+			}
+			if stats.exit {
+				log.Println("[ Summary ]")
+				log.Println("-------------------------------------------------------------------------------------")
+				log.Println("QPS: " + fmt.Sprintf("%v", (math.Round(float64(totalReqCount)/float64(*timeLimit)))) + " | " + "Min: " + fmt.Sprintf("%v", totalMinLat) +
+					"\xC2\xB5s | Max: " + fmt.Sprintf("%v", totalMaxLat) +
+					"\xC2\xB5s | >1ms: " + fmt.Sprintf("%v", (math.Round(float64(totalOneMs)/float64(totalReqCount)/0.0001)/100)) +
+					"% | >2ms: " + fmt.Sprintf("%v", (math.Round(float64(totalTwoMs)/float64(totalReqCount)/0.0001)/100)) +
+					"% | >4ms: " + fmt.Sprintf("%v", (math.Round(float64(totalFourMs)/float64(totalReqCount)/0.0001)/100)) +
+					"% | Timeouts: " + fmt.Sprintf("%v", totalTOCount) + " (" + fmt.Sprintf("%v", (math.Round(float64(totalTOCount)/float64(totalReqCount)/0.0001)/100)) + "%)" +
+					"| Errors: " + fmt.Sprintf("%v", totalErrCount) + " (" + fmt.Sprintf("%v", (math.Round(float64(totalErrCount)/float64(totalReqCount)/0.0001)/100)) + "%)")
+
+				return
+			}
+		}
+	}
+
+}
+
+func runQueryBenchmark(client *as.Client, policy *as.BasePolicy) {
+	for {
+		if (time.Now().Sub(startExecutionTime) / time.Second) > time.Duration(*timeLimit) {
+			// Times up, send exit signal
+			reportChan <- &TStats{true, 0, 0, 0, 0, 0, 0, 0}
+			return
+		}
+
+		did := getRandomDid(*keyCount, 3)
+
+		begin := time.Now()
+
+		key, err := as.NewKey(*namespace, *set, "DID:"+did)
+		record, err := client.Get(policy, key)
+
+		rLat := int64(time.Now().Sub(begin) / time.Microsecond)
+
+		recordStats(rLat, err)
+
+		read_cid := record.Bins["CID"].(string)
+
+		type Data struct {
+			Devices []string `json:"devices" as:"Devices"`
+		}
+		rec := &Data{}
+
+		begin = time.Now()
+		key, err = as.NewKey(*namespace, *set, "CID:"+read_cid)
+		err = client.GetObject(nil, key, rec)
+
+		rLat = int64(time.Now().Sub(begin) / time.Microsecond)
+
+		recordStats(rLat, err)
+
+		begin = time.Now()
+		var batch_keys []*as.Key
+		for _, device_item := range rec.Devices {
+			item_key, _ := as.NewKey(*namespace, *set, "DID:"+device_item)
+			batch_keys = append(batch_keys, item_key)
+		}
+
+		_, err = client.BatchGet(nil, batch_keys, "Sources")
+		rLat = int64(time.Now().Sub(begin) / time.Microsecond)
+
+		recordStats(rLat, err)
+	}
+}
+
+func seedDB(client *as.Client, cidCount int, didsPerCid int) {
 
 	var WritePolicy = as.NewWritePolicy(0, 0)
 	WritePolicy.Timeout = 10000 * time.Millisecond
@@ -102,7 +196,7 @@ func seedDB(cidCount int, didsPerCid int) {
 		for d := 0; d < didsPerCid; d++ {
 			did := makeUuidFromString(strconv.Itoa(c) + "+" + strconv.Itoa(d))
 			dids = append(dids, did)
-			key, err := as.NewKey("cid", "devices", "DID:"+did)
+			key, err := as.NewKey(*namespace, *set, "DID:"+did)
 			panicOnError(err)
 
 			bins := as.BinMap{"CID": cid}
@@ -112,15 +206,14 @@ func seedDB(cidCount int, didsPerCid int) {
 		}
 
 		// Write CID
-		key, err := as.NewKey("cid", "devices", "CID:"+cid)
+		key, err := as.NewKey(*namespace, *set, "CID:"+cid)
 		panicOnError(err)
 		bins := as.BinMap{"Devices": dids}
 		err = client.Put(WritePolicy, key, bins)
 		panicOnError(err)
 	}
-	end := time.Now()
 
-	log.Println("Seeded " + fmt.Sprintf("%v", cidCount) + " CIDs in: " + fmt.Sprintf("%v", end.Sub(begin)))
+	log.Println("Seeded " + fmt.Sprintf("%v", cidCount) + " CIDs in: " + fmt.Sprintf("%v", time.Now().Sub(begin)))
 }
 
 func readFlags() {
@@ -146,9 +239,10 @@ func max(a, b int64) int64 {
 }
 
 func min(a, b int64) int64 {
-	if a < b {
+	if (a < b && a > 0) || b == 0 {
 		return a
 	}
+
 	return b
 }
 
@@ -169,4 +263,33 @@ func panicOnError(err error) {
 	if err != nil {
 		panic(err)
 	}
+}
+
+func getRandomDid(cidMax int, didMax int) string {
+	rand.Seed(time.Now().UTC().UnixNano())
+	randCid := rand.Intn(cidMax)
+	randDid := rand.Intn(didMax)
+	return makeUuidFromString(strconv.Itoa(randCid) + "+" + strconv.Itoa(randDid))
+}
+
+func recordStats(rLat int64, err error) {
+
+	if err != nil {
+		if ae, ok := err.(ast.AerospikeError); ok && ae.ResultCode() == ast.TIMEOUT {
+			reportChan <- &TStats{false, 1, 0, 1, 0, 0, 0, 0} // timeout
+		} else {
+			reportChan <- &TStats{false, 1, 1, 0, 0, 0, 0, 0} // error
+		}
+	}
+
+	if rLat > 4000 {
+		reportChan <- &TStats{false, 1, 0, 0, rLat, 1, 1, 1}
+	} else if rLat > 2000 {
+		reportChan <- &TStats{false, 1, 0, 0, rLat, 1, 1, 0}
+	} else if rLat > 1000 {
+		reportChan <- &TStats{false, 1, 0, 0, rLat, 1, 0, 0}
+	} else {
+		reportChan <- &TStats{false, 1, 0, 0, rLat, 0, 0, 0}
+	}
+
 }
