@@ -34,5 +34,5 @@ Seed database with 1,000,000 unique CIDs with 3 DIDs each
 
 Run a 24 hour test randomly querying DIDs from 1m CID, with interval reports every hour:
 ```bash
-./dmp-aerospike-benchmarking -h localhost -i 3600 -t 86400 -k 1000000
+./dmp-aerospike-benchmarking -h localhost -i 3600 -t 86400 -k 1000000 -d 3
 ```
