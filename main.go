@@ -285,23 +285,24 @@ func getRandomDid(cidMax int, didMax int) string {
 }
 
 func recordStats(rLat int64, err error) {
+	var toErr, errErr int
 
 	if err != nil {
 		if ae, ok := err.(ast.AerospikeError); ok && ae.ResultCode() == ast.TIMEOUT {
-			reportChan <- &TStats{false, 0, 0, 1, 0, 0, 0, 0} // timeout
+			toErr = 1 // timeout
 		} else {
-			reportChan <- &TStats{false, 0, 1, 0, 0, 0, 0, 0} // error
+			errErr = 1 // error
 		}
 	}
 
 	if rLat > 4000 {
-		reportChan <- &TStats{false, 1, 0, 0, rLat, 1, 1, 1}
+		reportChan <- &TStats{false, 1, errErr, toErr, rLat, 1, 1, 1}
 	} else if rLat > 2000 {
-		reportChan <- &TStats{false, 1, 0, 0, rLat, 1, 1, 0}
+		reportChan <- &TStats{false, 1, errErr, toErr, rLat, 1, 1, 0}
 	} else if rLat > 1000 {
-		reportChan <- &TStats{false, 1, 0, 0, rLat, 1, 0, 0}
+		reportChan <- &TStats{false, 1, errErr, toErr, rLat, 1, 0, 0}
 	} else {
-		reportChan <- &TStats{false, 1, 0, 0, rLat, 0, 0, 0}
+		reportChan <- &TStats{false, 1, errErr, toErr, rLat, 0, 0, 0}
 	}
 
 }
