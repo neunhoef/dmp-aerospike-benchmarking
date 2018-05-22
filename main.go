@@ -30,8 +30,8 @@ var reportChan chan *TStats
 
 var host = flag.String("h", "10.150.73.10", "Aerospike server hostnames or IP addresses")
 var port = flag.Int("p", 3000, "Aerospike server port number.")
-var namespace = flag.String("n", "cid", "Aerospike namespace.")
-var set = flag.String("s", "devices", "Aerospike set name.")
+var namespace = flag.String("n", "test", "Aerospike namespace.")
+var set = flag.String("s", "aerospike", "Aerospike set name.")
 var benchMode = flag.String("m", "query", "query/seed. Seed to insert records, query to benchmark")
 var keyCount = flag.Int("k", 100000, "How many CID users to insert in Seed mode, or the range UUIDs to query that have already been seeded.")
 var didsPerCid = flag.Int("d", 3, " How many devices per CID to insert in Seed mode or to randomly select while benchmarking.")

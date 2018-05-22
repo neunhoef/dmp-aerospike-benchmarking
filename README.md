@@ -16,11 +16,11 @@ This is development repo to benchmark aerospike performance is sufficient for ID
   -m string
         query/seed. Seed to insert records, query to benchmark (default "query")
   -n string
-        Aerospike namespace. (default "cid")
+        Aerospike namespace. (default "test")
   -p int
         Aerospike server seed hostname or IP address port number. (default 3000)
   -s string
-        Aerospike set name. (default "devices")
+        Aerospike set name. (default "aerospike")
   -t int
         Number of seconds to run benchmark. (default 60)
   -u    Show usage information.
