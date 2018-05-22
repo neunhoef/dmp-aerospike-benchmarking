@@ -30,6 +30,7 @@ var reportChan chan *TStats
 
 var host = flag.String("h", "10.150.73.10", "Aerospike server hostnames or IP addresses")
 var port = flag.Int("p", 3000, "Aerospike server port number.")
+var connQueueSize = flag.Int("queueSize", 4096, "Maximum number of connections to pool.")
 var namespace = flag.String("n", "test", "Aerospike namespace.")
 var set = flag.String("s", "aerospike", "Aerospike set name.")
 var benchMode = flag.String("m", "query", "query/seed. Seed to insert records, query to benchmark")
@@ -44,7 +45,13 @@ var startExecutionTime time.Time
 
 func main() {
 	log.Println("[ Aerospike Benchmark ]")
-	client, err := as.NewClient(*host, *port)
+	clientPolicy := as.NewClientPolicy()
+	// cache lots  connections
+	clientPolicy.ConnectionQueueSize = *connQueueSize
+	// clientPolicy.User = *user
+	// clientPolicy.Password = *password
+	clientPolicy.Timeout = 10 * time.Second
+	client, err := as.NewClientWithPolicy(clientPolicy, *host, *port)
 	panicOnError(err)
 	log.Println("Nodes Found:", client.GetNodeNames())
 	log.Println("-------------------------------------------------------------------------------------")
@@ -146,11 +153,16 @@ func runQueryBenchmark(client *as.Client, policy *as.BasePolicy) {
 		begin := time.Now()
 
 		key, err := as.NewKey(*namespace, *set, "DID:"+did)
+		if err != nil {
+			panicOnError(err)
+		}
 		record, err := client.Get(policy, key)
-
 		rLat := int64(time.Now().Sub(begin) / time.Microsecond)
 
 		recordStats(rLat, err)
+		if err != nil {
+			continue
+		}
 
 		read_cid := record.Bins["CID"].(string)
 
@@ -276,9 +288,9 @@ func recordStats(rLat int64, err error) {
 
 	if err != nil {
 		if ae, ok := err.(ast.AerospikeError); ok && ae.ResultCode() == ast.TIMEOUT {
-			reportChan <- &TStats{false, 1, 0, 1, 0, 0, 0, 0} // timeout
+			reportChan <- &TStats{false, 0, 0, 1, 0, 0, 0, 0} // timeout
 		} else {
-			reportChan <- &TStats{false, 1, 1, 0, 0, 0, 0, 0} // error
+			reportChan <- &TStats{false, 0, 1, 0, 0, 0, 0, 0} // error
 		}
 	}
 
