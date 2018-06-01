@@ -44,6 +44,7 @@ var showUsage = flag.Bool("u", false, "Show usage information.")
 var startExecutionTime time.Time
 
 func main() {
+	readFlags()
 	log.Println("[ Aerospike Benchmark ]")
 	clientPolicy := as.NewClientPolicy()
 	// cache lots  connections
@@ -55,8 +56,6 @@ func main() {
 	panicOnError(err)
 	log.Println("Nodes Found:", client.GetNodeNames())
 	log.Println("-------------------------------------------------------------------------------------")
-
-	readFlags()
 
 	if *benchMode == "seed" {
 		seedDB(client, *keyCount, *didsPerCid)
